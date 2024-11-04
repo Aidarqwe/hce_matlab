@@ -1,104 +1,102 @@
 clear;
 clc;
 
-N = 20; % resolution (increase for finer grid)
-L = 0.1; % size
-h = L / N; % size of cell
+N = 20; % разрешение сетки
+L = 0.1; % размер пластины (м)
+h = L / N; % размер ячейки сетки (м)
 
 x = linspace(0, L, N);
 y = linspace(0, L, N);
 
 [X, Y] = meshgrid(x, y);
 
-% Basic conditions
-T = zeros(size(X));
-T0 = 300; % initial temperature
+% Начальные условия
+T0 = 300; % начальная температура (К)
+T = T0 * ones(size(X)); % инициализация всей пластины
 
-T = T + T0;
+% Параметры временного шага
+t = 0; % начальное время (с)
+tmax = 60; % конечное время моделирования (с)
+Nt = 5000; % количество временных шагов
+tau = (tmax - t) / Nt; % временной шаг (с)
 
-% Solver settings
-t = 0; % start time
-tmax = 60; % simulation time
-Nt = 1000; % number of time steps
-tau = (tmax - t) / Nt; % time step
+% Граничные условия
+Tb = 300; % температура на нижней границе (К)
+T(1, :) = Tb; % задание температуры на нижней границе
 
-% Boundary conditions (fixed)
-Tl = 400; % left boundary temperature
-Tb = 600; % bottom boundary temperature
-T(:, 1) = Tl; % set left boundary
-T(1, :) = Tb; % set bottom boundary
+% Свойства материала
+rho = 7800; % плотность (кг/м^3)
+cp = 460; % удельная теплоемкость (Дж/кг·К)
+k = 46; % теплопроводность (Вт/м·К)
 
-% Physical properties
-rho = 7800; % density
-cp = 460; % specific heat capacity
-k = 46; % thermal conductivity
+% Параметры конвекции и излучения
+h_c = 5; % коэффициент теплопередачи (Вт/м^2·К)
+T_ref = 300; % температура окружающей среды (К)
+epsilon = 0.8; % коэффициент излучательной способности
+sigma = 5.67e-8; % постоянная Стефана-Больцмана (Вт/м^2·К^4)
 
-A = k * tau / (rho * cp * h^2);
+% Интенсивность лазера
+q_laser = 1000; % мощность лазера (Вт/м^2)
 
-% Helper arrays for the Thomas algorithm (tridiagonal matrix)
-a = -A * ones(N-2, 1);
-b = (1 + 2*A) * ones(N-2, 1);
-c = -A * ones(N-2, 1);
+% Коэффициенты для метода Томаса
+A = @(T) k / (rho * cp * h^2) * tau;
+a = -A(T0) * ones(N-2, 1);
+b = (1 + 2 * A(T0)) * ones(N-2, 1);
+c = -A(T0) * ones(N-2, 1);
 
-% Set the range of temperatures for the color scale
-Tmin = min([T0, Tl, Tb]);
-Tmax = max([T0, Tl, Tb]);
-
-% Time loop
+% Цикл по времени
 while t < tmax
-    Tprev = T;  % save the previous temperature distribution
+    Tprev = T;  % сохранение предыдущего распределения температур
     
-    % Step 1: Update temperature along rows (horizontal)
+    % Обновление температуры по горизонтали
     for iy = 2:N-1
-        % Construct the right-hand side (known terms from previous time step)
         d = Tprev(iy, 2:N-1);
-        d(1) = d(1) + A * T(iy, 1);   % left boundary condition
-        d(end) = d(end) + A * T(iy, end); % right boundary (adiabatic)
+        d(1) = d(1) + A(T(iy, 1)) * T(iy, 1);  % левая граница (теплоизоляция)
+        d(end) = d(end) + A(T(iy, end)) * T(iy, end); % правая граница (теплоизоляция)
 
-        % Solve the tridiagonal system using Thomas algorithm
         T(iy, 2:N-1) = thomas_algorithm(a, b, c, d);
     end
 
-    % Step 2: Update temperature along columns (vertical)
+    % Обновление температуры по вертикали
     for ix = 2:N-1
-        % Construct the right-hand side (known terms from previous time step)
         d = Tprev(2:N-1, ix);
-        d(1) = d(1) + A * T(1, ix);   % bottom boundary condition
-        d(end) = d(end) + A * T(end, ix); % top boundary (adiabatic)
+        d(1) = d(1) + A(T(1, ix)) * T(1, ix);  % нижняя граница (Дирихле)
+        
+        % Верхняя граница: конвекция, излучение и лазер
+        q_conv = h_c * (Tprev(end, ix) - T_ref);
+        q_rad = epsilon * sigma * (Tprev(end, ix)^4 - T_ref^4);
+        d(end) = d(end) + A(T(end, ix)) * (q_conv + q_rad + q_laser);
 
-        % Solve the tridiagonal system using Thomas algorithm
         T(2:N-1, ix) = thomas_algorithm(a, b, c, d);
     end
     
-    % Reapply boundary conditions (fix the temperatures on the boundaries)
-    T(:, 1) = Tl;   % left boundary fixed at Tl
-    T(1, :) = Tb;   % bottom boundary fixed at Tb
-    T(:, end) = T(:, end-1); % right boundary: adiabatic condition (no heat flux)
-    T(end, :) = T(end-1, :); % top boundary: adiabatic condition (no heat flux)
-    
-    % Visualization (fix the color scale to Tmin and Tmax)
+    % Повторное применение граничных условий
+    T(1, :) = Tb;   % фиксированная температура на нижней границе
+    T(:, end) = T(:, end-1); % правая граница (теплоизоляция)
+    T(:, 1) = T(:, 2);       % левая граница (теплоизоляция)
+    T(end, :) = T(end-1, :); % верхняя граница (теплоизоляция)
+
+    % Визуализация
     contourf(X, Y, T, 20, 'EdgeColor', 'none');
-    caxis([Tmin Tmax]);  % fix the color axis
-    xlabel('x, m');
-    ylabel('y, m');
-    title(sprintf('Температура пластинки, K, t = %f', t));
+    caxis([T0 max(T(:))]);  % фиксирование цветовой шкалы
+    xlabel('x, м');
+    ylabel('y, м');
+    title(sprintf('Температура пластины, К, t = %.2f с', t));
     colorbar;
     drawnow;
     
-    % Advance time
+    % Обновление времени
     t = t + tau;
 end
 
-% Function for solving tridiagonal system using the Thomas algorithm
+% Функция для решения трёхдиагональной системы методом Томаса
 function x = thomas_algorithm(a, b, c, d)
-    N = length(b); % size of the system
-    % Forward sweep
+    N = length(b);
     for i = 2:N
         w = a(i-1) / b(i-1);
         b(i) = b(i) - w * c(i-1);
         d(i) = d(i) - w * d(i-1);
     end
-    % Backward substitution
     x = zeros(N, 1);
     x(N) = d(N) / b(N);
     for i = N-1:-1:1
